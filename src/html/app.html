@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Personium Chat</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js" integrity="sha384-ApNbgh9B+Y1QKtv3Rn7W3mgPxhU9K/ScQsAP7hUibX39j7fakFPskvXusvfa0b4Q" crossorigin="anonymous"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+    <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.min.js" integrity="sha384-JZR6Spejh4U02d8jOt6vLEHfe/JQGiRRSQQxSfFWpi1MquVdAyjUar5+76PVCmYl" crossorigin="anonymous"></script>
+    <style type="text/css">
+#console {
+  background: #000;
+  color: #090;
+  overflow: scroll;
+  font-size: 10px;
+  width: 100%;
+  height: 400px;
+}
+
+#right {
+  position: relative; 
+}
+#msgarea {
+  height: calc(100vh - 120px);
+  overflow-y: scroll;
+}
+#msginput {
+  height: 40px;
+  bottom: 0;
+}
+
+#console {
+  visibility: hidden;
+}
+
+
+
+.chat-timestamp {
+   color: #ccc;
+   margin-left: 5px;
+   display: inline-block; 
+}
+::-webkit-scrollbar {
+    width: 10px;
+}
+::-webkit-scrollbar-track {
+  border-radius: 10px;
+  box-shadow: inset 0 0 5px rgba(0, 0, 0, .1);
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 50, .5);
+  border-radius: 10px;
+  box-shadow:0 0 0 1px rgba(255, 255, 255, .3);
+}
+    </style>
+    <script type="text/javascript">
+var c = {
+  myUrl: "", 
+  yourUrl: "",
+  tokens: {},
+  profiles: {}
+};
+$(function() {
+  // Initialization
+  $("#inputtext").on('keypress', function(e){
+    if (e.keyCode ===13) {
+      c.chat();
+    }
+  });
+  $('#LoginWindow').modal({keyboard:false, backdrop: 'static' });
+
+  // Debug Console
+  c.out = function(text, color) {
+    if (!color) {
+      color = 'grey';
+    }
+    var out = '<font color="' + color + '">' + text+ '</font><br/>'
+    $('#console').append(out);
+    $("#console").scrollTop($("#console")[0].scrollHeight);
+  };
+  c.err = function(text) {
+    c.out(text, 'red');
+  };
+
+  c.encodeUrlForId = function(url) {
+    return encodeURIComponent( url ).replace(/\./g, "_").replace(/\%/g, "_").replace(/\-/g, "_");
+  };
+
+  c.wsUrl = function(cellUrl) {
+    return cellUrl.replace("https:", "wss:") + "__event";
+  };
+
+
+  // Events Base Functions
+  c.connect = function() {
+    if (c.ws) {
+      c.ws.onclose = null;
+      c.ws.close();
+    }
+    var wsUrl = c.wsUrl(c.yourUrl);
+    c.out("connecting to :" + wsUrl, 'blue');
+    c.ws = new WebSocket(wsUrl);
+    c.ws.onopen = c.onOpen;
+    c.ws.onmessage = c.onMessage;
+    c.ws.onclose = c.onClose;
+    c.ws.onerror = c.onError;
+  };
+
+  c.sendMessage = function(json) {
+    var msg = JSON.stringify(json);
+    c.out("sending:" + msg, 'blue');
+    c.ws.send(msg);
+  };
+
+  c.onOpen = function(ev) {
+    c.out('connection opened');
+    c.sendAccessToken();
+  };
+
+  c.onMessage = function(ev) {
+    if (ev && ev.data) {
+      c.out('msg:' + ev.data, 'green');
+      var res = JSON.parse(ev.data);
+      if (res.response == 'success' && res.expires_in) {
+        c.onTokenValid(res);
+      }
+      if (res.Type) {
+        c.onEventReceived(res);
+      }
+    }
+  };
+  c.onClose = function(ev) {
+    alert('closed');
+    c.out('closed by server', 'red');
+    c.out('code:' + ev.code);
+    c.out('reason:' + ev.reason);
+  };
+  c.onError = function(ev) {
+    c.err('error: ev.type=' + ev.type);
+    c.err('  ev.target.name: ' + ev.target.name);
+  };
+
+  // WS Auth Functions
+  c.sendAccessToken = function() {
+    c.sendMessage({access_token: c.getTokensFor(c.yourUrl).access_token});
+  };
+  c.onTokenValid = function(res){
+     c.subscribe();
+  };
+  c.onEventReceived = function(res){
+      c.outEvent(res);
+  };
+  c.subscribe = function() {
+    c.sendMessage({subscribe: {Type: "chat", Object:"*"}});
+  };
+  c.sendEvent = function(cellUrl, ev) {
+    var d = new $.Deferred();
+    c.out("posting event:" + JSON.stringify(ev));
+    var accessToken = c.getTokensFor(cellUrl).access_token;
+    $.post({
+        url: cellUrl + '__event',
+        processData: false,
+        data: JSON.stringify(ev),
+        headers: {'Content-Type':'application/json', 'Authorization': "Bearer " + accessToken}
+    }).done(function(){
+        c.out("event post success");
+        d.resolve();
+    }).fail(function(){
+        c.err("event post failure");
+        d.reject();
+    });
+    return d.promise();
+ 
+  };
+
+  // GUI Manipulation
+  c.showLoginProfile = function(prof) {
+    $('#profileName').html('<div class="media"><img class="mr-2 rounded" width="30" src="'+ prof.Image + '"/><div class="media-body">' +  prof.DisplayName + '</div>');
+    
+  };
+  c.showExtCell = function(url, selected) {
+    if (url.startsWith("personium-localunit:")) {
+      url = url.replace("personium-localunit:", "https://demo.personium.io");
+    }
+    c.getProfile(url).then(function(prof, url){
+      var active = "";
+      if (selected) {
+        active = " active list-group-item-secondary";
+      }
+      var html = '<a id="ext-' + c.encodeUrlForId(url) + '" href="javascript:c.onSelectExtCell(\''+url+'\')" class="list-group-item list-group-item-action' + active 
+               + '"><div class="media"><img class="mr-3 rounded" width="40" src="'+ prof.Image + '" /><div class="media-body">' 
+               +  prof.DisplayName + '</div></div></a>';
+      $("#extCells").append(html);
+    });
+  };
+  c.onSelectExtCell = function(url) {
+    $("#ext-" + c.encodeUrlForId(c.currentRoomUrl)).removeClass("active");
+    c.currentRoomUrl = url;
+    $("#ext-" + c.encodeUrlForId(url)).addClass("active");
+    c.out("entering room for ExtCell:"+url);
+    c.visit(url);
+  };
+  c.outEvent = function(ev) {
+    var date = new Date();
+    var dateStr = ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2) 
+    c.getProfile(ev.Subject).then(function(prof){
+      var html = '<li class="list-group-item"><div class="media"><img class="mr-3 rounded" width="40" src="'+ prof.Image
+                 + '"/><div class="media-body flex-column align-items-start"><div class="d-flex w-100 "><h5 class="mb-1">'
+                 +  prof.DisplayName +  '</h5><small class="chat-timestamp">' + dateStr +'</small></div><p class="mb-1">' + ev.Object + '</p></div></div></li>';
+      $("#msgarea").append(html);
+      $('#msgarea').scrollTop($("#msgarea")[0].scrollHeight);
+    });
+
+  };
+  c.showRoom = function(cellCell) {
+      var prof = c.profiles[c.encodeUrlForId(cellCell)];
+      var html = '<div class="list-group-item list-group-item-dark">Chat Room for :<div class="media"><img class="mr-3 rounded" width="30" src="'+ prof.Image
+                 + '"/><div class="media-body"><h5 class="mb-1">'
+                 +  prof.DisplayName +  '</h5></div></div></div>';
+      $("#room").html(html);
+      $("#msgarea").empty();
+  };
+
+
+  // Models
+  c.getTokensFor = function(cellUrl) {
+    return c.tokens[c.encodeUrlForId(cellUrl)];
+  };
+  c.setTokensFor = function(cellUrl, tokens) {
+     c.tokens[c.encodeUrlForId(cellUrl)] = tokens;
+  };
+
+  c.getMyAccessToken = function (cellUrl, username, pw) {
+    var d = new $.Deferred();
+    $.ajax({
+        type: "POST",
+        url: cellUrl + '__token',
+        processData: true,
+        dataType: 'json',
+        data: {
+            grant_type: "password",
+            username: username,
+            password: pw
+        },
+        headers: {'Accept':'application/json'}
+    }).then(function(data) {
+        d.resolve(data);
+    }).catch(function(){
+        d.reject();
+    });
+    return d.promise();
+  };
+  c.getVisitingAccessToken = function (myCellUrl, targetCellUrl, refreshToken) {
+    var d = new $.Deferred();
+    var tokens = c.getTokensFor(targetCellUrl);
+    if (tokens) {
+      d.resolve(tokens);
+      return d.promise();
+    }
+    $.ajax({
+        type: "POST",
+        url: myCellUrl + '__token',
+        processData: true,
+        dataType: 'json',
+        data: {
+            grant_type: "refresh_token",
+            p_target: targetCellUrl,
+            refresh_token: refreshToken
+        },
+        headers: {'Accept':'application/json'}
+    }).then(function(data) {
+        d.resolve(data);
+    }).catch(function(){
+        d.reject();
+    });
+    return d.promise();
+  };
+  c.getProfile = function(subj){
+    var d = new $.Deferred();
+    var s = subj.split("#");
+    var p = s[0] + '__/profile.json';
+    if (c.profiles[c.encodeUrlForId(subj)]) {
+       d.resolve(c.profiles[c.encodeUrlForId(subj)], subj);
+       return d.promise();
+    }
+    $.get({
+      url: p,
+      processData: false,
+      dataType: 'json',
+      
+    }).then(function(data){
+      c.profiles[c.encodeUrlForId(subj)] = data;
+      d.resolve(data, subj);
+    });
+    return d.promise();
+  };
+  c.getExtCells = function(subj) {
+    var d = new $.Deferred();
+    var s = subj.split("#");
+    var p = s[0] + '__ctl/ExtCell';
+    if (c.profiles[subj]) {
+       d.resolve(c.profiles[subj]);
+       return d.promise();
+    }
+    c.showExtCell(subj, true);
+    $.get({
+      url: p,
+      processData: false,
+      dataType: 'json',
+      headers: {'Accept':'application/json', 'Authorization': "Bearer " + c.getTokensFor(subj).access_token}
+    }).then(function(data){
+      data.d.results.forEach(function(extCell){
+        c.showExtCell(extCell.Url);
+      });
+      c.out("ext:"+data);
+      d.resolve(data.d.results);
+    });
+    return d.promise();
+  };
+
+  // Business Logic
+  c.login = function() {
+    c.myUrl = $("#cellurl").val();
+    c.yourUrl = c.myUrl;
+    var username = $("#username").val();
+    var pw = $("#password").val();
+    c.out("login id/pw = " + username + "/" + pw);
+
+    c.getMyAccessToken(c.myUrl, username, pw).then(function(res) {
+      c.out("authn success");
+      c.setTokensFor(c.myUrl, res);
+      c.out("access token:" + res.accessToken);
+      $('#LoginWindow').modal('hide');
+      c.connect();
+      return c.getProfile(c.myUrl);
+    }).then(function(prof){
+      c.currentRoomUrl = c.myUrl;
+      c.showLoginProfile(prof);
+      c.showRoom(c.myUrl);
+      c.getExtCells(c.myUrl);
+    }).catch(function() {
+      c.err('authn failed');
+    });
+  };
+  c.chat = function(){
+    var ev = {Type:"chat", Object: $('#inputtext').val(), Info:""};
+    c.sendEvent(c.yourUrl, ev);
+    $('#inputtext').val('');
+  };
+  c.visit = function(extCell) {
+    c.yourUrl = extCell;
+    c.showRoom(extCell);
+    c.getVisitingAccessToken(c.myUrl, c.yourUrl, c.getTokensFor(c.myUrl).refresh_token).then(function(res){
+      c.setTokensFor(c.yourUrl, res);
+    });
+    c.connect();
+    
+  };
+});
+
+    </script>
+  </head>
+  <body class="container">
+<div class="row">
+  <div class="col-4">
+    <h2>Personium Chat</h2>
+    <!-- Ext Cells -->
+    <div class="list-group" id="extCells">
+        <div class="list-group-item list-group-item-primary">Select Where to go chatting.</div>
+    </div>
+    <hr />
+    <div id="console">
+    </div>
+
+  </div>
+  <div class="col-8 container" id="right">
+<!-- ROOM -->
+<div id="room" class="list-group list-group-flush">
+   ROOM
+</div>
+
+<!-- TALK -->
+<ul id="msgarea" class="list-group list-group-flush">
+</ul>
+
+<!-- TALK INPUT-->
+<div id="msginput" class="input-group mb-3">
+  <div class="input-group-prepend">
+    <span class="input-group-text" id="profileName">Profile</span>
+  </div>
+  <input type="text" id="inputtext" class="form-control" aria-label="Profile" aria-describedby="profileName" />
+</div>
+<!-- Modal -->
+<div class="modal fade" id="LoginWindow" tabindex="-1" role="dialog" aria-labelledby="exampleModalLabel" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="exampleModalLabel">Personium Login</h5>
+        <!-- <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>-->
+      </div>
+      <div class="modal-body"> 
+        <form>
+<div class="form-group">
+    <label for="cellurl">Cell URL</label>
+    <input type="text" id="cellurl" class="form-control" value="https://demo.personium.io/shimono3/" placeholder="Enter email" />
+</div>
+<div class="form-group">
+  <label for="username">Accout Name</label>
+  <input type="text" class="form-control" id="username" value="me"/>
+</div>
+<div class="form-group">
+  <label for="password">Password</label>
+  <input type="password" id="password" class="form-control" value="personium"/>
+</div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" onclick="c.login();">login</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+
+
+
+  </body>
+</html>
